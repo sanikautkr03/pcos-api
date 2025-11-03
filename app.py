@@ -1,16 +1,13 @@
+import tensorflow as tf
 import numpy as np
 from PIL import Image
-import io
-import base64
-import os
-import tensorflow as tf
+import io, base64, os
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
 app = Flask(__name__)
 CORS(app)
 
-# === Load TFLite model ===
 MODEL_PATH = 'pcos_classifier.tflite'
 print("🚀 Loading model from:", MODEL_PATH)
 
@@ -20,102 +17,96 @@ interpreter.allocate_tensors()
 input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
 
-input_shape = input_details[0]['shape']
-IMG_HEIGHT, IMG_WIDTH = int(input_shape[1]), int(input_shape[2])
-print(f"✅ Model expects {IMG_HEIGHT}x{IMG_WIDTH}")
+# 🧠 Print shapes at startup for debugging
+print(f"Input shape: {input_details[0]['shape']}")
+print(f"Output shape: {output_details[0]['shape']}")
 
 def preprocess_image(image_data):
-    """Decode and preprocess base64 image for model"""
+    """Preprocess any-size base64 image for model input."""
     try:
-        if ',' in image_data:
-            image_data = image_data.split(',')[1]
-        img_bytes = base64.b64decode(image_data)
-        img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-        img = img.resize((IMG_WIDTH, IMG_HEIGHT))
-        img_array = np.array(img).astype(np.float32) / 255.0
+        img = Image.open(io.BytesIO(base64.b64decode(image_data)))
+        img = img.convert('RGB')
+
+        # dynamically get required model input size (e.g., 224x224)
+        target_h = input_details[0]['shape'][1]
+        target_w = input_details[0]['shape'][2]
+        img = img.resize((target_w, target_h))
+
+        img_array = np.array(img, dtype=np.float32) / 255.0
         img_array = np.expand_dims(img_array, axis=0)
         return img_array
     except Exception as e:
-        print("❌ Preprocessing failed:", e)
-        raise ValueError("Failed to analyze image")
-
-@app.route('/', methods=['GET'])
-def home():
-    return jsonify({
-        'message': '✅ PCOS Classification API is running',
-        'endpoints': ['/health', '/predict'],
-        'model': MODEL_PATH
-    }), 200
+        raise ValueError(f"Image preprocessing failed: {e}")
 
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({'status': 'healthy', 'model': 'loaded'}), 200
+    return jsonify({'status': 'healthy', 'model': MODEL_PATH}), 200
 
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
-        data = request.get_json(force=True)
+        data = request.get_json()
         if not data or 'image' not in data:
             return jsonify({'error': 'No image provided'}), 400
 
-        image_data = data['image']
+        image_data = data['image'].split(',')[1] if ',' in data['image'] else data['image']
         input_data = preprocess_image(image_data)
 
-        # Inference
+        # Run inference
         interpreter.set_tensor(input_details[0]['index'], input_data)
         interpreter.invoke()
         output_data = interpreter.get_tensor(output_details[0]['index']).squeeze()
 
-        print("🔍 Raw model output:", output_data)
-
-        # Normalize output
-        if np.isscalar(output_data):
+        # 🧩 Handle both model types (sigmoid or softmax)
+        if output_data.ndim == 0:  # single value (sigmoid)
             pcos_prob = float(output_data)
-            healthy_prob = 1.0 - pcos_prob
-        elif len(output_data) == 2:
+            healthy_prob = 1 - pcos_prob
+        elif output_data.shape[0] == 1:  # 1 output (sigmoid)
+            pcos_prob = float(output_data[0])
+            healthy_prob = 1 - pcos_prob
+        else:  # 2 outputs (softmax)
             healthy_prob = float(output_data[0])
             pcos_prob = float(output_data[1])
-        else:
-            raise ValueError(f"Unexpected output shape: {output_data.shape}")
 
-        pcos_prob = np.clip(pcos_prob, 0, 1)
-        healthy_prob = np.clip(healthy_prob, 0, 1)
-        is_pcos = bool(pcos_prob > 0.5)
-        confidence = round(float(max(healthy_prob, pcos_prob)) * 100, 2)
+        # Prediction results
+        is_pcos = pcos_prob > 0.5
+        confidence = round(max(healthy_prob, pcos_prob) * 100, 2)
 
-        # Severity level
-        if pcos_prob >= 0.85:
-            severity = 'severe'
-        elif pcos_prob >= 0.7:
-            severity = 'high'
-        elif pcos_prob >= 0.5:
-            severity = 'moderate'
-        elif pcos_prob >= 0.3:
-            severity = 'low'
-        else:
-            severity = 'none'
+        severity = (
+            'severe' if pcos_prob >= 0.85 else
+            'high' if pcos_prob >= 0.7 else
+            'moderate' if pcos_prob >= 0.5 else
+            'low' if pcos_prob >= 0.3 else 'none'
+        )
 
-        # Recommendations
         recommendations = []
         if is_pcos:
-            recommendations = [
-                {"title": "Consult Gynecologist", "description": "Book a professional consultation.", "priority": "high"},
-                {"title": "Lifestyle Modifications", "description": "Eat healthy, exercise regularly.", "priority": "medium"},
-            ]
+            if pcos_prob > 0.8:
+                recommendations.append({
+                    'title': 'Urgent Medical Attention',
+                    'description': 'High confidence PCOS detection. Consult specialist immediately.',
+                    'priority': 'urgent'
+                })
+            recommendations.extend([
+                {'title': 'Consult Gynecologist', 'description': 'Schedule appointment for professional diagnosis.', 'priority': 'high'},
+                {'title': 'Track Symptoms', 'description': 'Log symptoms daily for better monitoring.', 'priority': 'medium'},
+                {'title': 'Lifestyle Modifications', 'description': 'Focus on balanced diet and regular exercise.', 'priority': 'medium'}
+            ])
         else:
-            recommendations = [
-                {"title": "Regular Monitoring", "description": "Keep up a balanced routine.", "priority": "low"}
-            ]
+            recommendations.extend([
+                {'title': 'Regular Monitoring', 'description': 'Continue regular checkups and maintain a healthy lifestyle.', 'priority': 'low'},
+                {'title': 'Preventive Care', 'description': 'Maintain healthy weight and balanced diet.', 'priority': 'medium'}
+            ])
 
         result = {
             'success': True,
-            'isPCOS': bool(is_pcos),
-            'label': 'PCOS Detected' if is_pcos else 'Healthy',
+            'isPCOS': is_pcos,
             'confidence': confidence,
             'probabilities': {
-                'pcos': round(float(pcos_prob) * 100, 2),
-                'healthy': round(float(healthy_prob) * 100, 2)
+                'healthy': round(healthy_prob * 100, 2),
+                'pcos': round(pcos_prob * 100, 2)
             },
+            'label': 'PCOS Detected' if is_pcos else 'Healthy',
             'severity': severity,
             'recommendations': recommendations
         }
@@ -123,8 +114,8 @@ def predict():
         return jsonify(result), 200
 
     except Exception as e:
-        print("❌ Prediction error:", str(e))
-        return jsonify({'error': 'Failed to analyze image', 'details': str(e)}), 500
+        return jsonify({'error': str(e)}), 500
+
 
 if __name__ == '__main__':
     print("🚀 Starting PCOS API Server...")
