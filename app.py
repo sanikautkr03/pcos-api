@@ -31,7 +31,12 @@ def preprocess_image(image_data):
     try:
         img = Image.open(io.BytesIO(base64.b64decode(image_data)))
         img = img.convert('RGB')
-        img = img.resize((256, 256))
+        
+        # Dynamically get input shape (e.g., 224x224)
+        target_height = input_details[0]['shape'][1]
+        target_width = input_details[0]['shape'][2]
+        img = img.resize((target_width, target_height))
+        
         img_array = np.array(img, dtype=np.float32) / 255.0
         img_array = np.expand_dims(img_array, axis=0)
         return img_array
