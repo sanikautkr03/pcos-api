@@ -57,16 +57,21 @@ def predict():
         interpreter.invoke()
         output_data = interpreter.get_tensor(output_details[0]['index']).squeeze()
 
-        # 🧩 Handle both model types (sigmoid or softmax)
-        if output_data.ndim == 0:  # single value (sigmoid)
+        print("🔍 Raw model output:", output_data)
+        
+        # Auto-handle sigmoid or softmax
+        if output_data.ndim == 0 or output_data.shape == ():  
             pcos_prob = float(output_data)
             healthy_prob = 1 - pcos_prob
-        elif output_data.shape[0] == 1:  # 1 output (sigmoid)
+        elif output_data.shape[0] == 1:
             pcos_prob = float(output_data[0])
             healthy_prob = 1 - pcos_prob
-        else:  # 2 outputs (softmax)
-            healthy_prob = float(output_data[0])
+        elif output_data.shape[0] == 2:
+            # ✅ Swap this if labels appear flipped
             pcos_prob = float(output_data[1])
+            healthy_prob = float(output_data[0])
+        else:
+            raise ValueError("Unexpected output shape: " + str(output_data.shape))
 
         # Prediction results
         is_pcos = pcos_prob > 0.5
