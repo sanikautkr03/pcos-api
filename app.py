@@ -60,16 +60,20 @@ def predict():
         print("🔍 Raw model output:", output_data)
         
         # Auto-handle sigmoid or softmax
+        # Auto-handle sigmoid or softmax
         if output_data.ndim == 0 or output_data.shape == ():  
             pcos_prob = float(output_data)
             healthy_prob = 1 - pcos_prob
+        
         elif output_data.shape[0] == 1:
             pcos_prob = float(output_data[0])
             healthy_prob = 1 - pcos_prob
+        
         elif output_data.shape[0] == 2:
-            # ✅ Swap this if labels appear flipped
-            pcos_prob = float(output_data[1])
-            healthy_prob = float(output_data[0])
+            # ✅ Correct mapping (swap if needed depending on model)
+            pcos_prob = float(output_data[0])   # PCOS probability
+            healthy_prob = float(output_data[1])  # Healthy probability
+        
         else:
             raise ValueError("Unexpected output shape: " + str(output_data.shape))
 
